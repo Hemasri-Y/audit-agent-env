@@ -1,27 +1,32 @@
-[build-system]
+build-system]
 requires = ["setuptools>=68.0", "wheel"]
-build-backend = "setuptools.backends._legacy:_Backend"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "audit-agent-env"
 version = "1.0.0"
 description = "AI Audit Simulation Environment with Explainable Decision Tracking"
+readme = "README.md"
 requires-python = ">=3.10"
+license = {text = "MIT"}
 dependencies = [
-    "fastapi>=0.135.0",
-    "uvicorn>=0.44.0",
+    "openenv-core>=0.2.0",
+    "fastapi>=0.104.0",
+    "uvicorn>=0.24.0",
     "pydantic>=2.0.0",
-    "pandas",
+    "pandas>=2.0.0",
     "openpyxl>=3.1.0",
     "openai>=1.0.0",
     "pyyaml>=6.0",
 ]
 
-[tool.openenv]
-name = "audit_agent_env"
-version = "1.0.0"
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+]
 
-[tool.openenv.tasks]
-missing_field_detection = {difficulty = "easy", max_steps = 8}
-mismatch_detection = {difficulty = "medium", max_steps = 10}
-risk_analysis = {difficulty = "hard", max_steps = 15}
+[project.scripts]
+server = "uvicorn:main"
+
+[tool.setuptools]
+py-modules = ["app", "core", "models", "data_loader", "inference"]
