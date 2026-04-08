@@ -1,0 +1,53 @@
+name: audit_agent_env
+version: "1.0.0"
+description: "AI audit simulation — detect missing fields, mismatches, and financial risks in invoice/ledger documents"
+author: "AuditAgentEnv Team"
+
+tasks:
+  - name: missing_field_detection
+    description: "Detect missing or empty fields in invoice"
+    difficulty: easy
+    max_steps: 8
+
+  - name: mismatch_detection
+    description: "Compare invoice vs ledger to find mismatches"
+    difficulty: medium
+    max_steps: 10
+
+  - name: risk_analysis
+    description: "Detect calculation errors, tax issues, threshold breaches"
+    difficulty: hard
+    max_steps: 15
+
+action_space:
+  type: json
+  actions:
+    - extract_data
+    - check_missing_fields
+    - compare_fields
+    - flag_risk
+    - generate_report
+    - noop
+
+observation_space:
+  type: json
+  fields:
+    - phase
+    - available_documents
+    - extracted
+    - documents
+    - identified_issues
+    - action_history
+    - steps_taken
+    - max_steps
+    - current_task
+    - done
+    - error
+
+reward_range: [-0.3, 0.5]
+score_range: [0.0, 1.0]
+
+endpoints:
+  reset: POST /reset
+  step: POST /step
+  state: GET /state
