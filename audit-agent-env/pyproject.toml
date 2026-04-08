@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "audit-agent-env"
+version = "1.0.0"
+description = "AI Audit Simulation Environment with Explainable Decision Tracking"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.135.0",
+    "uvicorn>=0.44.0",
+    "pydantic>=2.0.0",
+    "pandas",
+    "openpyxl>=3.1.0",
+    "openai>=1.0.0",
+    "pyyaml>=6.0",
+]
+
+[tool.openenv]
+name = "audit_agent_env"
+version = "1.0.0"
+
+[tool.openenv.tasks]
+missing_field_detection = {difficulty = "easy", max_steps = 8}
+mismatch_detection = {difficulty = "medium", max_steps = 10}
+risk_analysis = {difficulty = "hard", max_steps = 15}
