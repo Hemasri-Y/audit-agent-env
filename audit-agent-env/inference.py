@@ -389,35 +389,73 @@ async def main():
 
     # ── Run tasks ──
     if IMAGE_NAME:
-        # remote/docker mode — robust import and error handling
+        # remote/docker mode — robust import and dynamic loader for audit_agent_env
+        import importlib
+        import importlib.util
+
+        AuditAgentEnvEnv = None
+
+        # 1) try normal import
         try:
-            try:
-                from audit_agent_env import AuditAgentEnvEnv
-            except Exception:
-                # ensure current dir is on path (submission environments vary)
-                import sys, os
+            mod = importlib.import_module("audit_agent_env")
+            AuditAgentEnvEnv = getattr(mod, "AuditAgentEnvEnv", None)
+        except Exception:
+            AuditAgentEnvEnv = None
 
-                cwd = os.getcwd()
-                if cwd not in sys.path:
-                    sys.path.insert(0, cwd)
-                from audit_agent_env import AuditAgentEnvEnv
+        # 2) try loading from common locations (cwd, repo subfolder)
+        if AuditAgentEnvEnv is None:
+            candidates = [
+                os.getcwd(),
+                os.path.dirname(__file__),
+                os.path.join(os.getcwd(), "audit-agent-env"),
+                os.path.join(os.getcwd(), "audit_agent_env"),
+            ]
+            for base in candidates:
+                path = os.path.join(base, "audit_agent_env.py")
+                if os.path.isfile(path):
+                    try:
+                        spec = importlib.util.spec_from_file_location("audit_agent_env", path)
+                        mod = importlib.util.module_from_spec(spec)
+                        spec.loader.exec_module(mod)
+                        AuditAgentEnvEnv = getattr(mod, "AuditAgentEnvEnv", None)
+                        if AuditAgentEnvEnv:
+                            break
+                    except Exception:
+                        continue
 
-            for task in TASKS:
-                env = None
-                try:
-                    env = await AuditAgentEnvEnv.from_docker_image(IMAGE_NAME)
-                    await run_one_task_remote(client, env, task)
-                except Exception as exc:
-                    print(f"[ERROR] Remote task failed: {type(exc).__name__}: {exc}", flush=True)
-                finally:
-                    if env:
-                        try:
-                            await env.close()
-                        except Exception:
-                            pass
-        except Exception as exc:
-            print(f"[ERROR] Cannot initialize remote env: {type(exc).__name__}: {exc}", flush=True)
+        # 3) deep search for the file in workspace
+        if AuditAgentEnvEnv is None:
+            for root, _dirs, files in os.walk(os.getcwd()):
+                if "audit_agent_env.py" in files:
+                    path = os.path.join(root, "audit_agent_env.py")
+                    try:
+                        spec = importlib.util.spec_from_file_location("audit_agent_env", path)
+                        mod = importlib.util.module_from_spec(spec)
+                        spec.loader.exec_module(mod)
+                        AuditAgentEnvEnv = getattr(mod, "AuditAgentEnvEnv", None)
+                        if AuditAgentEnvEnv:
+                            break
+                    except Exception:
+                        continue
+
+        if AuditAgentEnvEnv is None:
+            print("[ERROR] audit_agent_env module not found. Ensure 'audit_agent_env.py' is included in submission.", flush=True)
             return
+
+        # Run tasks remotely
+        for task in TASKS:
+            env = None
+            try:
+                env = await AuditAgentEnvEnv.from_docker_image(IMAGE_NAME)
+                await run_one_task_remote(client, env, task)
+            except Exception as exc:
+                print(f"[ERROR] Remote task failed: {type(exc).__name__}: {exc}", flush=True)
+            finally:
+                if env:
+                    try:
+                        await env.close()
+                    except Exception:
+                        pass
     else:
         from data_loader import load_invoice, load_ledger
         from core import AuditEnv
