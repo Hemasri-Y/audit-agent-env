@@ -446,7 +446,55 @@ async def main():
         for task in TASKS:
             env = None
             try:
-                env = await AuditAgentEnvEnv.from_docker_image(IMAGE_NAME)
+                # Support IMAGE_NAME being either:
+                # - a docker image name (default behavior),
+                # - an http(s) URL (will connect to an existing server), or
+                # - the special value "local-shim" (run remote-mode locally without Docker)
+                if isinstance(IMAGE_NAME, str) and IMAGE_NAME == "local-shim":
+                    # Create a lightweight async shim around the local AuditEnv
+                    from data_loader import load_invoice, load_ledger
+                    from core import AuditEnv
+                    from models import TaskName
+
+                    class LocalShim:
+                        def __init__(self, audit_env):
+                            self._env = audit_env
+
+                        async def reset(self, payload):
+                            # payload is {'task': task}
+                            task = payload.get('task')
+                            task_enum = TaskName(task)
+                            obs = self._env.reset(task_enum)
+                            return obs.model_dump() if hasattr(obs, 'model_dump') else obs
+
+                        async def step(self, action):
+                            # action comes as a dict
+                            from models import AuditAction
+
+                            act = AuditAction(**action)
+                            res = self._env.step(act)
+                            # convert to dict shape expected by remote runner
+                            out = {
+                                'reward': getattr(res, 'reward', 0.0),
+                                'done': getattr(res, 'done', False),
+                                'observation': res.observation.model_dump() if hasattr(res.observation, 'model_dump') else res.observation,
+                                'info': getattr(res, 'info', {}),
+                            }
+                            return out
+
+                        async def close(self):
+                            return None
+
+                    invoice = load_invoice()
+                    ledger = load_ledger()
+                    local_env = AuditEnv(invoice=invoice, ledger=ledger)
+                    env = LocalShim(local_env)
+                elif isinstance(IMAGE_NAME, str) and IMAGE_NAME.startswith("http"):
+                    # Directly instantiate the helper with the provided base URL (no Docker)
+                    env = AuditAgentEnvEnv(base_url=IMAGE_NAME, container_id=None)
+                else:
+                    env = await AuditAgentEnvEnv.from_docker_image(IMAGE_NAME)
+
                 await run_one_task_remote(client, env, task)
             except Exception as exc:
                 print(f"[ERROR] Remote task failed: {type(exc).__name__}: {exc}", flush=True)
