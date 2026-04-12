@@ -362,7 +362,11 @@ async def main():
 
     print(f"[INFO] API_BASE_URL = {API_BASE_URL}", flush=True)
     print(f"[INFO] MODEL_NAME   = {MODEL_NAME}", flush=True)
-    print(f"[INFO] API_KEY      = {API_KEY[:10]}...", flush=True)
+    try:
+        masked = API_KEY[:6] + "..." if API_KEY else "(missing)"
+    except Exception:
+        masked = "(invalid)"
+    print(f"[INFO] API_KEY      = {masked}", flush=True)
     print(flush=True)
 
     client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
@@ -385,10 +389,35 @@ async def main():
 
     # ── Run tasks ──
     if IMAGE_NAME:
-        from audit_agent_env import AuditAgentEnvEnv
-        for task in TASKS:
-            env = await AuditAgentEnvEnv.from_docker_image(IMAGE_NAME)
-            await run_one_task_remote(client, env, task)
+        # remote/docker mode — robust import and error handling
+        try:
+            try:
+                from audit_agent_env import AuditAgentEnvEnv
+            except Exception:
+                # ensure current dir is on path (submission environments vary)
+                import sys, os
+
+                cwd = os.getcwd()
+                if cwd not in sys.path:
+                    sys.path.insert(0, cwd)
+                from audit_agent_env import AuditAgentEnvEnv
+
+            for task in TASKS:
+                env = None
+                try:
+                    env = await AuditAgentEnvEnv.from_docker_image(IMAGE_NAME)
+                    await run_one_task_remote(client, env, task)
+                except Exception as exc:
+                    print(f"[ERROR] Remote task failed: {type(exc).__name__}: {exc}", flush=True)
+                finally:
+                    if env:
+                        try:
+                            await env.close()
+                        except Exception:
+                            pass
+        except Exception as exc:
+            print(f"[ERROR] Cannot initialize remote env: {type(exc).__name__}: {exc}", flush=True)
+            return
     else:
         from data_loader import load_invoice, load_ledger
         from core import AuditEnv
@@ -402,4 +431,11 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except Exception as exc:  # top-level catch so hackathon runner sees diagnostics
+        import traceback, sys
+
+        traceback.print_exc()
+        print(f"[ERROR] inference.py failed: {type(exc).__name__}: {exc}", flush=True)
+        sys.exit(1)
