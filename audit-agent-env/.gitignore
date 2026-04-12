@@ -1,8 +1,10 @@
 \.venv/
 __pycache__/
+*.pyc
 .vscode/
 .DS_Store
-*.pyc
 dist/
 build/
 \.pytest_cache/
+*.egg-info/
+uv.lock

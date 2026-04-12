@@ -1,8 +1,8 @@
 """
-AuditAgentEnv — Inference Script iterated
+AuditAgentEnv — Inference Script
 ====================================
-Runs LLM agent against all 3 tasks.
-Mandatory [START]/[STEP]/[END] logging format.
+Runs LLM agent against all 3 audit tasks.
+Mandatory [START]/[STEP]/[END] logging format per hackathon spec.
 """
 
 import asyncio
@@ -10,6 +10,7 @@ import json
 import os
 import sys
 import textwrap
+import traceback
 from typing import List, Optional
 
 from openai import OpenAI
@@ -21,35 +22,35 @@ API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
 MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
 
 BENCHMARK = "audit_agent_env"
+TASKS = ["missing_field_detection", "mismatch_detection", "risk_analysis"]
 MAX_STEPS_MAP = {
     "missing_field_detection": 8,
     "mismatch_detection": 10,
     "risk_analysis": 15,
 }
-TASKS = ["missing_field_detection", "mismatch_detection", "risk_analysis"]
 
 
 ###############################################################################
 # LOGGING — exact hackathon format
 ###############################################################################
 
-def log_start(task: str, env: str, model: str):
+def log_start(task: str, env: str, model: str) -> None:
     print(f"[START] task={task} env={env} model={model}", flush=True)
 
 
-def log_step(step: int, action: str, reward: float, done: bool, error: Optional[str]):
+def log_step(step: int, action: str, reward: float, done: bool, error: Optional[str]) -> None:
     err = error if error else "null"
     d = str(done).lower()
     print(f"[STEP] step={step} action={action} reward={reward:.2f} done={d} error={err}", flush=True)
 
 
-def log_end(success: bool, steps: int, score: float, rewards: List[float]):
+def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
     rstr = ",".join(f"{r:.2f}" for r in rewards)
-    print(f"[END] success={str(success).lower()} steps={steps} score={score:.2f} rewards={rstr}", flush=True)
+    print(f"[END] success={str(success).lower()} steps={steps} score={score:.3f} rewards={rstr}", flush=True)
 
 
 ###############################################################################
-# OBSERVATION SUMMARIZER — keeps LLM prompt small and readable
+# OBSERVATION SUMMARIZER
 ###############################################################################
 
 def summarize_obs(observation: dict) -> str:
@@ -173,22 +174,21 @@ def parse_llm_json(text: str) -> dict:
     """Best-effort extraction of a JSON object from LLM text."""
     text = text.strip()
 
-    # 1. Direct parse
     try:
         return json.loads(text)
     except json.JSONDecodeError:
         pass
 
-    # 2. Strip markdown fences
     if "```" in text:
         for block in text.split("```"):
-            block = block.strip().removeprefix("json").strip()
+            block = block.strip()
+            if block.startswith("json"):
+                block = block[4:].strip()
             try:
                 return json.loads(block)
             except json.JSONDecodeError:
                 continue
 
-    # 3. Extract first { ... }
     start = text.find("{")
     end = text.rfind("}")
     if start >= 0 and end > start:
@@ -197,7 +197,6 @@ def parse_llm_json(text: str) -> dict:
         except json.JSONDecodeError:
             pass
 
-    # 4. Give up
     print(f"[DEBUG] PARSE FAILED: {text[:200]}", flush=True)
     return {"action": "noop", "params": {}}
 
@@ -227,10 +226,64 @@ def call_llm(client: OpenAI, task: str, observation: dict) -> dict:
 
 
 ###############################################################################
+# TASK RUNNER (remote / docker mode)
+###############################################################################
+
+async def run_one_task_remote(client: OpenAI, env, task: str) -> float:
+    max_steps = MAX_STEPS_MAP[task]
+    rewards: List[float] = []
+    steps_taken = 0
+    score = 0.0
+    success = False
+
+    log_start(task=task, env=BENCHMARK, model=MODEL_NAME)
+
+    try:
+        obs_result = await env.reset({"task": task})
+        observation = obs_result if isinstance(obs_result, dict) else obs_result.model_dump()
+
+        for step in range(1, max_steps + 1):
+            if observation.get("done", False):
+                break
+
+            action_dict = call_llm(client, task, observation)
+            print(f"[DEBUG] Parsed action: {action_dict}", flush=True)
+
+            step_result = await env.step(action_dict)
+            result = step_result if isinstance(step_result, dict) else step_result.model_dump()
+
+            reward = result.get("reward", 0.0)
+            done = result.get("done", False)
+            observation = result.get("observation", {})
+            error = observation.get("error")
+
+            rewards.append(reward)
+            steps_taken = step
+
+            log_step(step=step, action=action_dict.get("action", "unknown"),
+                     reward=reward, done=done, error=error)
+
+            if done:
+                score = result.get("info", {}).get("grader_score", 0.0)
+                break
+
+        score = max(0.0, min(1.0, score))
+        success = score >= 0.1
+
+    except Exception as exc:
+        print(f"[DEBUG] TASK ERROR: {type(exc).__name__}: {exc}", flush=True)
+
+    finally:
+        log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
+
+    return score
+
+
+###############################################################################
 # TASK RUNNER (local mode — direct env)
 ###############################################################################
 
-async def run_one_task(client: OpenAI, env, task: str):
+async def run_one_task_local(client: OpenAI, env, task: str) -> float:
     from models import AuditAction, TaskName
 
     task_enum = TaskName(task)
@@ -264,13 +317,8 @@ async def run_one_task(client: OpenAI, env, task: str):
             rewards.append(reward)
             steps_taken = step
 
-            log_step(
-                step=step,
-                action=action_dict.get("action", "unknown"),
-                reward=reward,
-                done=done,
-                error=error,
-            )
+            log_step(step=step, action=action_dict.get("action", "unknown"),
+                     reward=reward, done=done, error=error)
 
             if done:
                 score = result.info.get("grader_score", 0.0)
@@ -289,90 +337,22 @@ async def run_one_task(client: OpenAI, env, task: str):
 
 
 ###############################################################################
-# TASK RUNNER (docker / remote mode)
-###############################################################################
-
-async def run_one_task_remote(client: OpenAI, env, task: str):
-    max_steps = MAX_STEPS_MAP[task]
-    rewards: List[float] = []
-    steps_taken = 0
-    score = 0.0
-    success = False
-
-    log_start(task=task, env=BENCHMARK, model=MODEL_NAME)
-
-    try:
-        obs_result = await env.reset({"task": task})
-        observation = obs_result if isinstance(obs_result, dict) else obs_result.model_dump()
-
-        for step in range(1, max_steps + 1):
-            if observation.get("done", False):
-                break
-
-            action_dict = call_llm(client, task, observation)
-            print(f"[DEBUG] Parsed action: {action_dict}", flush=True)
-
-            step_result = await env.step(action_dict)
-            result = step_result if isinstance(step_result, dict) else step_result.model_dump()
-
-            reward = result.get("reward", 0.0)
-            done = result.get("done", False)
-            observation = result.get("observation", {})
-            error = observation.get("error")
-
-            rewards.append(reward)
-            steps_taken = step
-
-            log_step(
-                step=step,
-                action=action_dict.get("action", "unknown"),
-                reward=reward,
-                done=done,
-                error=error,
-            )
-
-            if done:
-                score = result.get("info", {}).get("grader_score", 0.0)
-                break
-
-        score = max(0.0, min(1.0, score))
-        success = score >= 0.1
-
-    except Exception as exc:
-        print(f"[DEBUG] TASK ERROR: {type(exc).__name__}: {exc}", flush=True)
-
-    finally:
-        try:
-            await env.close()
-        except Exception:
-            pass
-        log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
-
-    return score
-
-
-###############################################################################
 # MAIN
 ###############################################################################
 
 async def main():
-    # ── Validate config ──
     if not API_KEY:
         print("[ERROR] HF_TOKEN not set! Run: export HF_TOKEN=hf_your_token", flush=True)
-        return
+        sys.exit(1)
 
     print(f"[INFO] API_BASE_URL = {API_BASE_URL}", flush=True)
     print(f"[INFO] MODEL_NAME   = {MODEL_NAME}", flush=True)
-    try:
-        masked = API_KEY[:6] + "..." if API_KEY else "(missing)"
-    except Exception:
-        masked = "(invalid)"
+    masked = API_KEY[:6] + "..." if len(API_KEY) > 6 else "***"
     print(f"[INFO] API_KEY      = {masked}", flush=True)
     print(flush=True)
 
     client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
 
-    # ── Quick sanity check — can we reach the LLM? ──
     print("[INFO] Testing LLM connection...", flush=True)
     try:
         test = client.chat.completions.create(
@@ -384,160 +364,60 @@ async def main():
     except Exception as exc:
         print(f"[ERROR] Cannot reach LLM: {type(exc).__name__}: {exc}", flush=True)
         print("[ERROR] Fix your HF_TOKEN / API_BASE_URL / MODEL_NAME and retry.", flush=True)
-        return
+        sys.exit(1)
 
     print(flush=True)
 
-    # ── Run tasks ──
     if IMAGE_NAME:
-        # remote/docker mode — robust import and dynamic loader for audit_agent_env
-        import importlib
-        import importlib.util
+        await _run_remote(client)
+    else:
+        await _run_local(client)
 
-        AuditAgentEnvEnv = None
 
-        # 1) try normal import
+async def _run_remote(client: OpenAI):
+    """Run all tasks against a Docker container."""
+    from audit_agent_env import AuditAgentEnvEnv
+
+    for task in TASKS:
+        env = None
         try:
-            mod = importlib.import_module("audit_agent_env")
-            AuditAgentEnvEnv = getattr(mod, "AuditAgentEnvEnv", None)
-        except Exception:
-            AuditAgentEnvEnv = None
+            if IMAGE_NAME.startswith("http"):
+                env = AuditAgentEnvEnv(base_url=IMAGE_NAME, container_id=None)
+            else:
+                env = await AuditAgentEnvEnv.from_docker_image(IMAGE_NAME)
 
-        # 2) try loading from common locations (cwd, repo subfolder)
-        if AuditAgentEnvEnv is None:
-            candidates = [
-                os.getcwd(),
-                os.path.dirname(__file__),
-                os.path.abspath(os.path.join(os.getcwd(), "audit-agent-env")),
-                os.path.abspath(os.path.join(os.getcwd(), "audit_agent_env")),
-                os.path.abspath(os.path.join(os.path.dirname(__file__), "..")),
-                os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "audit-agent-env")),
-            ]
-            for base in candidates:
-                if not base:
-                    continue
-                # first try importing by adding the candidate dir to sys.path
-                if base not in sys.path:
-                    sys.path.insert(0, base)
+            await run_one_task_remote(client, env, task)
+
+        except Exception as exc:
+            print(f"[ERROR] Remote task '{task}' setup failed: {type(exc).__name__}: {exc}", flush=True)
+            log_start(task=task, env=BENCHMARK, model=MODEL_NAME)
+            log_end(success=False, steps=0, score=0.0, rewards=[])
+
+        finally:
+            if env:
                 try:
-                    mod = importlib.import_module("audit_agent_env")
-                    AuditAgentEnvEnv = getattr(mod, "AuditAgentEnvEnv", None)
-                    if AuditAgentEnvEnv:
-                        break
+                    await env.close()
                 except Exception:
                     pass
 
-                path = os.path.join(base, "audit_agent_env.py")
-                if os.path.isfile(path):
-                    try:
-                        spec = importlib.util.spec_from_file_location("audit_agent_env", path)
-                        mod = importlib.util.module_from_spec(spec)
-                        spec.loader.exec_module(mod)
-                        AuditAgentEnvEnv = getattr(mod, "AuditAgentEnvEnv", None)
-                        if AuditAgentEnvEnv:
-                            break
-                    except Exception:
-                        continue
 
-        # 3) deep search for the file in workspace
-        if AuditAgentEnvEnv is None:
-            for root, _dirs, files in os.walk(os.getcwd()):
-                if "audit_agent_env.py" in files:
-                    path = os.path.join(root, "audit_agent_env.py")
-                    try:
-                        spec = importlib.util.spec_from_file_location("audit_agent_env", path)
-                        mod = importlib.util.module_from_spec(spec)
-                        spec.loader.exec_module(mod)
-                        AuditAgentEnvEnv = getattr(mod, "AuditAgentEnvEnv", None)
-                        if AuditAgentEnvEnv:
-                            break
-                    except Exception:
-                        continue
+async def _run_local(client: OpenAI):
+    """Run all tasks directly (no Docker)."""
+    from data_loader import load_invoice, load_ledger
+    from core import AuditEnv
 
-        if AuditAgentEnvEnv is None:
-            print("[ERROR] audit_agent_env module not found. Ensure 'audit_agent_env.py' is included in submission.", flush=True)
-            return
+    invoice = load_invoice()
+    ledger = load_ledger()
+    env = AuditEnv(invoice=invoice, ledger=ledger)
 
-        # Run tasks remotely
-        for task in TASKS:
-            env = None
-            try:
-                # Support IMAGE_NAME being either:
-                # - a docker image name (default behavior),
-                # - an http(s) URL (will connect to an existing server), or
-                # - the special value "local-shim" (run remote-mode locally without Docker)
-                if isinstance(IMAGE_NAME, str) and IMAGE_NAME == "local-shim":
-                    # Create a lightweight async shim around the local AuditEnv
-                    from data_loader import load_invoice, load_ledger
-                    from core import AuditEnv
-                    from models import TaskName
-
-                    class LocalShim:
-                        def __init__(self, audit_env):
-                            self._env = audit_env
-
-                        async def reset(self, payload):
-                            # payload is {'task': task}
-                            task = payload.get('task')
-                            task_enum = TaskName(task)
-                            obs = self._env.reset(task_enum)
-                            return obs.model_dump() if hasattr(obs, 'model_dump') else obs
-
-                        async def step(self, action):
-                            # action comes as a dict
-                            from models import AuditAction
-
-                            act = AuditAction(**action)
-                            res = self._env.step(act)
-                            # convert to dict shape expected by remote runner
-                            out = {
-                                'reward': getattr(res, 'reward', 0.0),
-                                'done': getattr(res, 'done', False),
-                                'observation': res.observation.model_dump() if hasattr(res.observation, 'model_dump') else res.observation,
-                                'info': getattr(res, 'info', {}),
-                            }
-                            return out
-
-                        async def close(self):
-                            return None
-
-                    invoice = load_invoice()
-                    ledger = load_ledger()
-                    local_env = AuditEnv(invoice=invoice, ledger=ledger)
-                    env = LocalShim(local_env)
-                elif isinstance(IMAGE_NAME, str) and IMAGE_NAME.startswith("http"):
-                    # Directly instantiate the helper with the provided base URL (no Docker)
-                    env = AuditAgentEnvEnv(base_url=IMAGE_NAME, container_id=None)
-                else:
-                    env = await AuditAgentEnvEnv.from_docker_image(IMAGE_NAME)
-
-                await run_one_task_remote(client, env, task)
-            except Exception as exc:
-                print(f"[ERROR] Remote task failed: {type(exc).__name__}: {exc}", flush=True)
-            finally:
-                if env:
-                    try:
-                        await env.close()
-                    except Exception:
-                        pass
-    else:
-        from data_loader import load_invoice, load_ledger
-        from core import AuditEnv
-
-        invoice = load_invoice()
-        ledger = load_ledger()
-        env = AuditEnv(invoice=invoice, ledger=ledger)
-
-        for task in TASKS:
-            await run_one_task(client, env, task)
+    for task in TASKS:
+        await run_one_task_local(client, env, task)
 
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
-    except Exception as exc:  # top-level catch so hackathon runner sees diagnostics
-        import traceback, sys
-
+    except Exception as exc:
         traceback.print_exc()
         print(f"[ERROR] inference.py failed: {type(exc).__name__}: {exc}", flush=True)
         sys.exit(1)

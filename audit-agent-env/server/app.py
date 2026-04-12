@@ -1,29 +1,28 @@
 """
 AuditAgentEnv — FastAPI Server
 ===============================
-Thin wrapper over AuditEnv. Three endpoints, nothing more.
-OpenEnv-Complaint server with main() entry point
+OpenEnv-compliant server: reset(), step(), state() over HTTP.
 """
-import sys
+
 import os
+import sys
 
-#Add Parent directory to path so imports work from server
-sys.path.insert(0,os.path.join(os.path.dirname(__file__),".."))
+_parent = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _parent not in sys.path:
+    sys.path.insert(0, _parent)
 
-from fastapi import FastAPI, HTTPException
 import uvicorn
-from models import AuditAction, AuditObservation, ResetRequest, StepResult, TaskName
+from fastapi import Body, FastAPI, HTTPException
+
+from models import AuditAction, ResetRequest
 from core import AuditEnv
 from data_loader import load_invoice, load_ledger
 
-# ── Load data once at startup ──
 invoice = load_invoice()
 ledger = load_ledger()
 
-# ── Create environment ──
 env = AuditEnv(invoice=invoice, ledger=ledger)
 
-# ── FastAPI app ──
 app = FastAPI(title="AuditAgentEnv", version="1.0.0")
 
 
@@ -33,7 +32,7 @@ def health():
 
 
 @app.post("/reset")
-def reset(request: ResetRequest = ResetRequest()) -> dict:
+def reset(request: ResetRequest = Body(default_factory=ResetRequest)) -> dict:
     obs = env.reset(request.task)
     return obs.model_dump()
 
@@ -55,9 +54,10 @@ def state() -> dict:
     except RuntimeError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-def main():
-    """Entry point for the server"""
-    uvicorn.run(app,host="0.0.0.0",port=7860)
 
-if __name__== "__main__":
+def main():
+    uvicorn.run(app, host="0.0.0.0", port=7860)
+
+
+if __name__ == "__main__":
     main()

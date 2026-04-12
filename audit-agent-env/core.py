@@ -291,7 +291,12 @@ class AuditEnv:
         is_valid, issue_type, details = self._validate_comparison(params)
 
         if is_valid:
-            conf = CONFIDENCE.get(issue_type.replace("_mismatch", "_mismatch"), 0.85)
+            conf_key = (
+                "vendor_mismatch"
+                if issue_type == "vendor_name_mismatch"
+                else issue_type
+            )
+            conf = CONFIDENCE.get(conf_key, 0.85)
             self._identified_issues.append(IdentifiedIssue(
                 type=issue_type,
                 field=f"{params.invoice_field} vs {params.ledger_field}",
