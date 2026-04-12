@@ -267,7 +267,7 @@ async def run_one_task_remote(client: OpenAI, env, task: str) -> float:
                 score = result.get("info", {}).get("grader_score", 0.0)
                 break
 
-        score = max(0.0, min(1.0, score))
+        score = max(0.01, min(0.99, score))
         success = score >= 0.1
 
     except Exception as exc:
@@ -324,7 +324,7 @@ async def run_one_task_local(client: OpenAI, env, task: str) -> float:
                 score = result.info.get("grader_score", 0.0)
                 break
 
-        score = max(0.0, min(1.0, score))
+        score = max(0.01, min(0.99, score))
         success = score >= 0.1
 
     except Exception as exc:
@@ -391,7 +391,7 @@ async def _run_remote(client: OpenAI):
         except Exception as exc:
             print(f"[ERROR] Remote task '{task}' setup failed: {type(exc).__name__}: {exc}", flush=True)
             log_start(task=task, env=BENCHMARK, model=MODEL_NAME)
-            log_end(success=False, steps=0, score=0.0, rewards=[])
+            log_end(success=False, steps=0, score=0.01, rewards=[])
 
         finally:
             if env:

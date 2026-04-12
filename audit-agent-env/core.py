@@ -187,12 +187,12 @@ class AuditEnv:
     # ── grade() ──
     def grade(self) -> float:
         if self._task_config is None:
-            return 0.0
+            return 0.01
         t = self._task_config.task_name
         if t == TaskName.MISSING_FIELD_DETECTION: return self._grade_task1()
         if t == TaskName.MISMATCH_DETECTION: return self._grade_task2()
         if t == TaskName.RISK_ANALYSIS: return self._grade_task3()
-        return 0.0
+        return 0.01
 
     # ============================================================
     # ACTION PROCESSING
@@ -457,6 +457,11 @@ class AuditEnv:
     # GRADING (unchanged logic)
     # ============================================================
 
+    @staticmethod
+    def _clamp_score(score: float) -> float:
+        """Clamp to the open interval (0, 1) — hackathon requires strictly between 0 and 1."""
+        return max(0.01, min(0.99, score))
+
     def _grade_task1(self) -> float:
         score = 0.0
         if set(self._extracted) >= {"invoice", "ledger"}: score += 0.10
@@ -466,7 +471,7 @@ class AuditEnv:
         fps = [i for i in self._identified_issues if not i.correct]
         score += 0.20 - min(len(fps) * 0.05, 0.20)
         if self._report is not None: score += 0.20
-        return max(0.0, min(1.0, score))
+        return self._clamp_score(score)
 
     def _grade_task2(self) -> float:
         score = 0.0
@@ -479,7 +484,7 @@ class AuditEnv:
         if self._report is not None:
             score += 0.15
             if self._report.risk_level == self._task_config.expected_risk_level: score += 0.10
-        return max(0.0, min(1.0, score))
+        return self._clamp_score(score)
 
     def _grade_task3(self) -> float:
         score = 0.0
@@ -494,7 +499,7 @@ class AuditEnv:
         if self._report is not None:
             score += 0.10
             if self._report.risk_level == self._task_config.expected_risk_level: score += 0.05
-        return max(0.0, min(1.0, score))
+        return self._clamp_score(score)
 
     # ── Observation builder ──
     def _build_observation(self) -> AuditObservation:
