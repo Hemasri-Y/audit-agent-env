@@ -8,6 +8,7 @@ Mandatory [START]/[STEP]/[END] logging format.
 import asyncio
 import json
 import os
+import sys
 import textwrap
 from typing import List, Optional
 
@@ -407,10 +408,25 @@ async def main():
             candidates = [
                 os.getcwd(),
                 os.path.dirname(__file__),
-                os.path.join(os.getcwd(), "audit-agent-env"),
-                os.path.join(os.getcwd(), "audit_agent_env"),
+                os.path.abspath(os.path.join(os.getcwd(), "audit-agent-env")),
+                os.path.abspath(os.path.join(os.getcwd(), "audit_agent_env")),
+                os.path.abspath(os.path.join(os.path.dirname(__file__), "..")),
+                os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "audit-agent-env")),
             ]
             for base in candidates:
+                if not base:
+                    continue
+                # first try importing by adding the candidate dir to sys.path
+                if base not in sys.path:
+                    sys.path.insert(0, base)
+                try:
+                    mod = importlib.import_module("audit_agent_env")
+                    AuditAgentEnvEnv = getattr(mod, "AuditAgentEnvEnv", None)
+                    if AuditAgentEnvEnv:
+                        break
+                except Exception:
+                    pass
+
                 path = os.path.join(base, "audit_agent_env.py")
                 if os.path.isfile(path):
                     try:
